@@ -106,6 +106,9 @@ extern io_module_func netmap_module_func;
 /* registered onvm context */
 extern io_module_func onvm_module_func;
 
+/* registered rdmare context */
+extern io_module_func rdmare_module_func;
+
 /* check I/O module access permissions */
 int
 CheckIOModuleAccessPermissions();
@@ -120,6 +123,8 @@ CheckIOModuleAccessPermissions();
 			current_iomodule_func = &netmap_module_func;	\
  		else if (!strcmp(m, "onvm"))				\
   			current_iomodule_func = &onvm_module_func;	\
+		else if (!strcmp(m, "rdmare"))				\
+			current_iomodule_func = &rdmare_module_func;	\
 		else							\
 			assert(0);					\
 	}

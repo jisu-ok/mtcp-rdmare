@@ -157,6 +157,15 @@ EnrollRouteTableEntry(char *optstr)
 			break;
 		}
 #endif
+	} else if (current_iomodule_func == &rdmare_module_func) {
+#ifndef DISABLE_RDMARE
+		for (i = 0; i < num_devices; i++) {
+			if (strcmp(CONFIG.eths[i].dev_name, dev))
+				continue;
+			ifidx = CONFIG.eths[i].ifindex;
+			break;
+		}
+#endif
 	}
 
 	ridx = CONFIG.routes++;

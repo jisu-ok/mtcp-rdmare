@@ -45,6 +45,10 @@
 #include <fcntl.h>
 /* for netmap macros */
 #include "netmap_user.h"
+
+/* for using RDMA Raw Ethernet */
+#include <infiniband/verbs.h>
+
 /*----------------------------------------------------------------------------*/
 io_module_func *current_iomodule_func = &dpdk_module_func;
 #ifndef DISABLE_DPDK
@@ -676,6 +680,117 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 
 		freeifaddrs(ifap);
 #endif /* ENABLE_ONVM */
+	} else if (current_iomodule_func == &rdmare_module_func) {
+#ifndef DISABLE_RDMARE
+		/* Get the list of offload capable devices */
+		struct ibv_device **dev_list = ibv_get_device_list(NULL);
+		if (!dev_list) {
+			perror("Failed to get devices list");
+			exit(EXIT_FAILURE);
+		}
+		printf(">>>>J: 1. Get the list of offload capable devices (SetNetEnv())\n");
+
+		/* For now, use only the first adapter (device) on the list */
+		struct ibv_device *ib_dev = dev_list[0];
+		if (!ib_dev) {
+			TRACE_ERROR("IB device not found");
+			exit(EXIT_FAILURE);
+		}
+		printf(">>>>J: 1-1. For now, use only the first adapter (device) on the list (SetNetEnv())\n");
+
+		
+		struct ifaddrs *ifap;
+		struct ifaddrs *iter_if;
+		char *seek;
+
+		if (getifaddrs(&ifap) != 0) {
+			perror("getifaddrs: ");
+			exit(EXIT_FAILURE);
+		}
+
+		iter_if = ifap;
+		do {
+			if (iter_if->ifa_addr && iter_if->ifa_addr->sa_family == AF_INET &&
+				!set_all_inf &&
+				(seek=strstr(dev_name_list, iter_if->ifa_name)) != NULL &&
+				/* check if the interface was not aliased */
+				*(seek + strlen(iter_if->ifa_name)) != ':') {
+
+				/* For now, just assume set_all_inf is 0 */
+				// if (set_all_inf) {
+				// 	TRACE_ERROR("set_all_inf\n");
+				// 	exit(EXIT_FAILURE);
+				// }
+
+				struct ifreq ifr;
+
+				/* Setting informations */
+				eidx = CONFIG.eths_num++;
+				// strcpy(CONFIG.eths[eidx].dev_name, ibv_get_device_name(ib_dev));
+				strcpy(CONFIG.eths[eidx].dev_name, iter_if->ifa_name);
+				// strcpy(ifr.ifr_name, ibv_get_device_name(ib_dev));
+				strcpy(ifr.ifr_name, iter_if->ifa_name);
+
+				/* Create socket */
+				int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+				if (sock == -1) {
+					perror("socket");
+					exit(EXIT_FAILURE);
+				}
+
+				/* getting addres */
+				if (ioctl(sock, SIOCGIFADDR, &ifr) == 0) {
+					struct in_addr sin = ((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr;
+					CONFIG.eths[eidx].ip_addr = *(uint32_t *)&sin;
+				}
+				else {
+					perror("ioctl (SIOCGIFADDR) failed");
+					exit(EXIT_FAILURE);
+				}
+
+				if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+					for (j=0; j < ETH_ALEN; j++) {
+						CONFIG.eths[eidx].haddr[j] = ifr.ifr_addr.sa_data[j];
+					}
+				}
+				else {
+					perror("ioctl (SIOCGIFHWADDR) failed");
+					exit(EXIT_FAILURE);
+				}
+
+				/* Net MASK */
+				if (ioctl(sock, SIOCGIFNETMASK, &ifr) == 0) {
+					struct in_addr sin = ((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr;
+					CONFIG.eths[eidx].netmask = *(uint32_t *)&sin;
+				}
+				else {
+					perror("ioctl (SIOCGIFNETMASK) failed");
+					exit(EXIT_FAILURE);
+				}
+
+				close(sock);
+
+				CONFIG.eths[eidx].ifindex = eidx;
+				TRACE_INFO("Ifindex of interface %s is: %d\n", ifr.ifr_name, CONFIG.eths[eidx].ifindex);
+
+				/* add to attached devices */
+				for (j=0; j < num_devices_attached; j++) {
+					if (devices_attached[j] == CONFIG.eths[eidx].ifindex) {
+						break;
+					}
+				} // J: why do we need this for loop..?
+
+				devices_attached[num_devices_attached] = if_nametoindex(ifr.ifr_name);
+				num_devices_attached++;
+				fprintf(stderr, "Total number of attached devices: %d\n", num_devices_attached);
+				// fprintf(stderr, "Interface name: %s\n", ibv_get_device_name(ib_dev));
+				fprintf(stderr, "Interface name: %s\n", iter_if->ifa_name);
+			}
+			iter_if = iter_if->ifa_next;
+		} while (iter_if != NULL);
+
+		freeifaddrs(ifap);
+#endif /* !DISABLE_RDMARE */		
 	}
 
 	CONFIG.nif_to_eidx = (int*)calloc(MAX_DEVICES, sizeof(int));
