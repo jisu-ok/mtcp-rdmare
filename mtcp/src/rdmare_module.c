@@ -23,6 +23,9 @@
 #define SQ_NUM_DESC 512 /* maximum number of sends waiting for completion */
 #define RQ_NUM_DESC 512 /* The maximum receive ring length without processing */
 
+#define MAC_SANCTUARY {0x24, 0x8A, 0x07, 0x91, 0x69, 0xA0}
+#define MAC_MOSCOW {0x24, 0x8A, 0x07, 0x91, 0x68, 0xE8}
+
 struct rdmare_private_context {
 	struct ibv_context *context;
 	struct ibv_pd *pd;
@@ -240,51 +243,53 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 
 
 	/* Steering rule to intercept packet to DEST_MAC and place packet in ring pointed by ->qp */
-	struct ibv_flow_attr attr = {
-		.comp_mask = 0,
-		.type = IBV_FLOW_ATTR_ALL_DEFAULT, // another option: IBV_FLOW_ATTR_SNIFFER
-		.size = sizeof(struct ibv_flow_attr),
-		.priority = 0,
-		.num_of_specs = 0,
-		.port = PORT_NUM,
-		.flags = 0
-	};
+	// struct ibv_flow_attr attr = {
+	// 	.comp_mask = 0,
+	// 	// .type = IBV_FLOW_ATTR_ALL_DEFAULT, // another option: IBV_FLOW_ATTR_SNIFFER
+	// 	.type = IBV_FLOW_ATTR_SNIFFER,
+	// 	.size = sizeof(struct ibv_flow_attr),
+	// 	.priority = 0,
+	// 	.num_of_specs = 0,
+	// 	.port = PORT_NUM,
+	// 	.flags = 0
+	// };
 
 	/* Alternative way */
-	// struct raw_eth_flow_attr {
-	// 	struct ibv_flow_attr attr;
-	// 	struct ibv_flow_spec_eth spec_eth;
-	// } __attribute__((packed)) flow_attr = {
-	// 	.attr = {
-	// 		.comp_mask = 0,
-	// 		.type = IBV_FLOW_ATTR_NORMAL,
-	// 		.size = sizeof(flow_attr),
-	// 		.priority = 0,
-	// 		.num_of_specs = 1,
-	// 		.port = PORT_NUM,
-	// 		.flags = 0,
-	// 	},
-	// 	.spec_eth = {
-	// 		.type = IBV_FLOW_SPEC_ETH,
-	// 		.size = sizeof(struct ibv_flow_spec_eth),
-	// 		.val = {
-	// 			.dst_mac = DEST_MAC, // need to be specified
-	// 			.src_mac = SRC_MAC, // need to be specified
-	// 			.ether_type = 0,
-	// 			.vlan_tag = 0,
-	// 		},
-	// 		.mask = {
-	// 			.dst_mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-	// 			.src_mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-	// 			.ether_type = 0,
-	// 			.vlan_tag = 0,
-	// 		}
-	// 	}
-	// }
+	struct raw_eth_flow_attr {
+		struct ibv_flow_attr attr;
+		struct ibv_flow_spec_eth spec_eth;
+	} __attribute__((packed)) flow_attr = {
+		.attr = {
+			.comp_mask = 0,
+			.type = IBV_FLOW_ATTR_NORMAL,
+			.size = sizeof(flow_attr),
+			.priority = 0,
+			.num_of_specs = 1,
+			.port = PORT_NUM,
+			.flags = 0,
+		},
+		.spec_eth = {
+			.type = IBV_FLOW_SPEC_ETH,
+			.size = sizeof(struct ibv_flow_spec_eth),
+			.val = {
+				.dst_mac = MAC_SANCTUARY, // need to be specified
+				.src_mac = MAC_MOSCOW, // need to be specified
+				.ether_type = 0,
+				.vlan_tag = 0,
+			},
+			.mask = {
+				.dst_mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+				.src_mac = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+				.ether_type = 0,
+				.vlan_tag = 0,
+			}
+		}
+	};
 
 	/* Create (register) steering rule to QP */
 	struct ibv_flow *eth_flow;
-	eth_flow = ibv_create_flow(rpc->qp, &attr);
+	// eth_flow = ibv_create_flow(rpc->qp, &attr);
+	eth_flow = ibv_create_flow(rpc->qp, &flow_attr.attr);
 	if (!eth_flow) {
 		TRACE_ERROR("Couldn't attach steering flow\n");
 		exit(EXIT_FAILURE);
@@ -368,7 +373,7 @@ rdmare_send_pkts(struct mtcp_thread_context *ctx, int nif)
 	/* poll for completion */
 	msgs_completed = ibv_poll_cq(rpc->send_cq, 1, &wc);
 	if (msgs_completed > 0) {
-		printf("Completed message %ld\n", wc.wr_id);
+		printf("Send: message %ld, size %d\n", wc.wr_id, wc.byte_len);
 	}
 	else if (msgs_completed < 0) {
 		TRACE_ERROR("Polling error\n");
@@ -406,6 +411,8 @@ rdmare_get_wptr(struct mtcp_thread_context *ctx, int nif, uint16_t len)
 int32_t
 rdmare_recv_pkts(struct mtcp_thread_context *ctx, int ifidx)
 {
+	// printf(">>>>J: rdmare_recv_pkts() is called!\n");
+
 	struct rdmare_private_context *rpc;
 	struct ibv_wc wc;
 	int msgs_completed;
@@ -415,7 +422,7 @@ rdmare_recv_pkts(struct mtcp_thread_context *ctx, int ifidx)
 	/* poll for completion */
 	msgs_completed = ibv_poll_cq(rpc->recv_cq, 1, &wc);
 	if (msgs_completed > 0) {
-		printf("message %ld received size %d\n", wc.wr_id, wc.byte_len);
+		printf("Receive: message %ld, size %d\n", wc.wr_id, wc.byte_len);
 		rpc->recv_pkt_size[wc.wr_id] = wc.byte_len;
 		
 		rpc->recv_sg_entry.addr = (uint64_t)rpc->recv_pktbuf + ENTRY_SIZE*wc.wr_id;
@@ -423,12 +430,16 @@ rdmare_recv_pkts(struct mtcp_thread_context *ctx, int ifidx)
 		ibv_post_recv(rpc->qp, &rpc->recv_wr, &rpc->recv_bad_wr);
 	}
 	else if (msgs_completed < 0) {
+		// printf(">>>>J: msgs_completed < 0 in rdmare_recv_pkts()\n");
 		TRACE_ERROR("Polling error\n");
 		exit(EXIT_FAILURE);
 	}
+	// else {
+	// 	printf(">>>>J: msgs_completed = 0 in rdmare_recv_pkts()\n");		
+	// }
 
-
-	return 1;
+	// printf(">>>>J: rdmare_recv_pkts() returns!\n");
+	return msgs_completed;
 }
 
 /*----------------------------------------------------------------------------*/
