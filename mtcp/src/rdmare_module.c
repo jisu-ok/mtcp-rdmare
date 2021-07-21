@@ -45,6 +45,7 @@ struct rdmare_private_context {
 	// void *recv_pktbuf[MAX_PKT_BURST];
 	void *recv_pktbuf;
 	uint16_t recv_pkt_size[RQ_NUM_DESC];
+	int recv_pkt_idx;
 	uint64_t send_n;
 	uint64_t recv_n;
 } __attribute__((aligned(__WORDSIZE)));
@@ -89,6 +90,7 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 		rpc->recv_pkt_size[i] = 0;
 	rpc->send_n = 0;
 	rpc->recv_n = 0;
+	rpc->recv_pkt_idx = 0;
 
 	/* For now, assume there is only one ibv device in the host */
 	struct ibv_device **dev_list;
@@ -376,10 +378,15 @@ rdmare_send_pkts(struct mtcp_thread_context *ctx, int nif)
 	// printf(">>>>J: n is %d\n", rpc->n);
 	// printf(">>>>J: After ibv_post_send() (rdmare_send_pkts())\n");
 
+	memset(&wc, 0, sizeof(wc));
+	msgs_completed = 0;
 	/* poll for completion */
+	do {
 	msgs_completed = ibv_poll_cq(rpc->send_cq, 1, &wc);
+	} while (msgs_completed == 0);
+
 	if (msgs_completed > 0) {
-		printf("Send: message %ld, size %d\n", wc.wr_id, wc.byte_len);
+		printf("Send: message %ld, status is %d, sent size %d\n", wc.wr_id, wc.status, rpc->send_pkt_size);
 	}
 	else if (msgs_completed < 0) {
 		TRACE_ERROR("Polling error\n");
@@ -400,9 +407,15 @@ rdmare_send_pkts(struct mtcp_thread_context *ctx, int nif)
 uint8_t *
 rdmare_get_wptr(struct mtcp_thread_context *ctx, int nif, uint16_t len)
 {
+	// printf(">>>>J: rdmare_get_wptr(): called!\n");
+
 	struct rdmare_private_context *rpc = (struct rdmare_private_context *) ctx->io_private_context;
 
-	while (rpc->send_pkt_size != 0) {}
+	while (rpc->send_pkt_size != 0) {
+		rdmare_send_pkts(ctx, nif);
+		// printf(">>>>J: rdmare_get_wptr(): send_pkt_size is %d\n", rpc->send_pkt_size);
+		// exit(EXIT_FAILURE);
+	}
 
 	rpc->send_pkt_size = len;
 	return (uint8_t *) rpc->send_pktbuf;
@@ -425,11 +438,13 @@ rdmare_recv_pkts(struct mtcp_thread_context *ctx, int ifidx)
 
 	rpc = (struct rdmare_private_context *) ctx->io_private_context;
 
+	memset(&wc, 0, sizeof(wc));
 	/* poll for completion */
 	msgs_completed = ibv_poll_cq(rpc->recv_cq, 1, &wc);
 	if (msgs_completed > 0) {
-		printf("Receive: message %ld, size %d\n", wc.wr_id, wc.byte_len);
+		printf("Receive: message %ld, status is %d, size %d\n", wc.wr_id, wc.status, wc.byte_len);
 		rpc->recv_pkt_size[wc.wr_id] = wc.byte_len;
+		rpc->recv_pkt_idx = wc.wr_id;
 		
 		rpc->recv_sg_entry.addr = (uint64_t)rpc->recv_pktbuf + ENTRY_SIZE*wc.wr_id;
 		rpc->recv_wr.wr_id = wc.wr_id;
@@ -459,8 +474,9 @@ rdmare_get_rptr(struct mtcp_thread_context *ctx, int ifidx, int index, uint16_t 
 {
 	struct rdmare_private_context *rpc = (struct rdmare_private_context *) ctx->io_private_context;
 
-	*len = rpc->recv_pkt_size[index];
-	return ((uint8_t *) rpc->recv_pktbuf) + ENTRY_SIZE*index;
+	// *len = rpc->recv_pkt_size[index];
+	*len = rpc->recv_pkt_size[rpc->recv_pkt_idx];
+	return ((uint8_t *) rpc->recv_pktbuf) + ENTRY_SIZE*rpc->recv_pkt_idx;
 }
 
 /*----------------------------------------------------------------------------*/
