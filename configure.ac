@@ -76,6 +76,8 @@ AC_SUBST(PSIO, 0)
 AC_SUBST(ONVM, 0)
 # Reset NETMAP to 0
 AC_SUBST(NETMAP, 0)
+# Reset RDMARE to 0
+AC_SUBST(RDMARE, 0)
 # Reset HWCSUM to 1
 AC_SUBST(HWCSUM, 1)
 
@@ -148,7 +150,15 @@ then
 	AC_SUBST(ONVM, 1)
 fi
 
-if test "$with_psio_lib" == "" && test "$with_dpdk_lib" == "" && test "$enable_netmap" = ""
+dnl Example of default-disabled feature
+AC_ARG_ENABLE([rdmare],
+	AS_HELP_STRING([--enable-rdmare], [Enable RDMARE module]))
+
+AS_IF([test "x$enable_rdmare" = "xyes"], [
+	    AC_SUBST(RDMARE, 1)
+])
+
+if test "$with_psio_lib" == "" && test "$with_dpdk_lib" == "" && test "$enable_netmap" = "" && test "$enable_rdmare" = ""
 then
 	AC_MSG_ERROR([Packet I/O library is missing. Please set either dpdk or psio or netmap as your I/O lib.])
 fi

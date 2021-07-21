@@ -6,6 +6,7 @@ DPDK=@DPDK@
 PS=@PSIO@
 NETMAP=@NETMAP@
 ONVM=@ONVM@
+RDMARE=@RDMARE@
 CCP=@CCP@
 CFLAGS=@CFLAGS@
 
@@ -59,6 +60,11 @@ INC += -I@ONVMLIBPATH@/lib
 INC += -DENABLE_ONVM
 LIBS += @ONVMLIBPATH@/onvm_nflib/$(RTE_TARGET)/libonvm.a
 LIBS += @ONVMLIBPATH@/lib/$(RTE_TARGET)/lib/libonvmhelper.a -lm
+endif
+
+# rdmare-specific variables
+ifeq ($(RDMARE),1)
+LIBS += -lmtcp -lpthread -lnuma -lrt -libverbs
 endif
 
 ifeq ($V,) # no echo
