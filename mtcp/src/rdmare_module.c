@@ -79,7 +79,11 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 
 	rpc = (struct rdmare_private_context *)ctx->io_private_context;
 
-	/* Initialize integer values */
+	/* Initialize default values */
+	memset(&rpc->send_sg_entry, 0, sizeof(rpc->send_sg_entry));
+	memset(&rpc->recv_sg_entry, 0, sizeof(rpc->recv_sg_entry));
+	memset(&rpc->send_wr, 0, sizeof(rpc->send_wr));
+	memset(&rpc->recv_wr, 0, sizeof(rpc->recv_wr));
 	rpc->send_pkt_size = 0;
 	for (int i = 0; i < RQ_NUM_DESC; i++)
 		rpc->recv_pkt_size[i] = 0;
@@ -184,6 +188,7 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 	/* Allocate memory for send/receive packet buffer */
 	int send_bufsize = ENTRY_SIZE*SQ_NUM_DESC; /* maximum size of data to be access directly by HW */
 	rpc->send_pktbuf = malloc(send_bufsize);
+	memset(rpc->send_pktbuf, 0, send_bufsize); // optional?
 	if (!rpc->send_pktbuf) {
 		TRACE_ERROR("Couldn't allocate memory for send packet buffer\n");
 		exit(EXIT_FAILURE);
@@ -191,6 +196,7 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 
 	int recv_bufsize = ENTRY_SIZE*RQ_NUM_DESC;
 	rpc->recv_pktbuf = malloc(recv_bufsize);
+	memset(rpc->recv_pktbuf, 0, recv_bufsize); //optional?
 	if (!rpc->recv_pktbuf) {
 		TRACE_ERROR("Couldn't allocate memory for recv packet buffer\n");
 		exit(EXIT_FAILURE);
