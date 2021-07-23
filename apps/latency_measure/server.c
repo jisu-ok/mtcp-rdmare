@@ -13,7 +13,7 @@
 
 #define CONCURRENCY		1
 #define IP_RANGE 		1
-#define RECV_BUFLEN 	(32 * 1024)
+// #define RECV_BUFLEN 	(32 * 1024)
 
 #define DEBUG(fmt, args...)	fprintf(stderr, "[DEBUG] " fmt "\n", ## args)
 #define ERROR(fmt, args...)	fprintf(stderr, fmt "\n", ## args)
@@ -51,25 +51,30 @@ int main(int argc, char **argv) {
     // send_buffer
     char *buf;
 
+    // the amount to receive in bytes
+    int recv_size;
+    int recv_buf_size;
 
-    if (argc < 4) {
-        printf("Usage: ./server [IPv4] [port] [mode]\n");
+
+    if (argc < 5) {
+        printf("Usage: ./server [IPv4] [port] [amount to recv in bytes] [mode]\n");
         return -1;
     }
     saddr.sin_family = AF_INET;
     saddr.sin_addr.s_addr = inet_addr(argv[1]);
     saddr.sin_port = htons(atoi(argv[2]));
-    // send_size = atoi(argv[3]);
-    
-    assert(strncmp(argv[3], "do-nothing", strlen("do-nothing")) == 0);
+    recv_size = atoi(argv[3]);
+    recv_buf_size = recv_size + 1024;
+
+    assert(strncmp(argv[4], "do-nothing", strlen("do-nothing")) == 0);
 
     // Receive buffer allocation
-    buf = malloc(RECV_BUFLEN);
+    buf = malloc(recv_buf_size);
     if (!buf) {
         ERROR("malloc() for recv buf failed.");
         return -1;
     }
-    memset(buf, 0x00, RECV_BUFLEN);
+    memset(buf, 0x00, recv_buf_size);
 
 
     // This must be done before mtcp_init()
@@ -166,13 +171,12 @@ int main(int argc, char **argv) {
     }
 
     // read data
-    int read, total_read = 0;
-    while (1) {
-        read = mtcp_read(mctx, conn_sockfd, buf, RECV_BUFLEN);
-        if (read < 0) {
-            if (errno == ENOTCONN)
-                break;
-        }
+    int read, left, total_read = 0;
+    left = recv_size;
+
+    while (left > 0) {
+        read = mtcp_read(mctx, conn_sockfd, buf, recv_size);
+        left -= read;
         total_read += read;
     }
 
