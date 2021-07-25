@@ -10,6 +10,7 @@
 
 
 #include <mtcp_api.h>
+#include <mtcp_epoll.h>
 
 #define CONCURRENCY		1
 #define IP_RANGE 		1
@@ -37,12 +38,14 @@ int main(int argc, char **argv) {
     struct mtcp_conf mcfg;
     struct thread_context *ctx;
     mctx_t mctx;
+    struct mtcp_epoll_event *events;
+    struct mtcp_epoll_event ev;
     int core = 0;
 
     // sockets
 	struct sockaddr_in saddr;
 	// struct sockaddr_in daddr;
-    int sockfd;
+    int sockfd, epfd, conn_sockfd;
     int backlog = 3;
 
     // time
@@ -122,13 +125,15 @@ int main(int argc, char **argv) {
     // DEBUG("Creating pool of TCP source ports...");
     // mtcp_init_rss(mctx, INADDR_ANY, IP_RANGE, daddr.sin_addr.s_addr, daddr.sin_port);
 
-    // Create epoller?
-    // ep_id = mtcp_epoll_create(mctx, mcfg.max_num_buffers);
-    // events = (struct mtcp_epoll_event *) calloc(mcfg.max_num_buffers, sizeof(struct mtcp_epoll_event));
-    // if (!events) {
-    //     ERROR("Failed to allocate events.");
-    //     return -1;
-    // }
+    printf("\n\n");
+
+    // Create epoll instance
+    epfd = mtcp_epoll_create(mctx, mcfg.max_num_buffers);
+    events = (struct mtcp_epoll_event *) calloc(mcfg.max_num_buffers, sizeof(struct mtcp_epoll_event));
+    if (!events) {
+        ERROR("Failed to allocate events.");
+        return -1;
+    }
 
     // Create socket
     DEBUG("Creating socket...");
@@ -138,15 +143,17 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // ret = mtcp_setsock_nonblock(mctx, sockfd);
-    // if (ret < 0 ) {
-    //     ERROR("Failed to set socket in nonblocking mode.");
-    //     return -1;
-    // }
+    // Set listening socket as nonblocking mode
+    ret = mtcp_setsock_nonblock(mctx, sockfd);
+    if (ret < 0 ) {
+        ERROR("Failed to set socket in nonblocking mode.");
+        return -1;
+    }
 
-    // ev.events = MTCP_EPOLLIN;
-    // ev.data.sockid = sockfd;
-    // mtcp_epoll_ctl(mctx, ep_id, MTCP_EPOLL_CTL_ADD, sockfd, &ev);
+    // Register listening socket to epoll instance
+    ev.events = MTCP_EPOLLIN;
+    ev.data.sockid = sockfd;
+    mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_ADD, sockfd, &ev);
 
 
     // This is server program who receives data
@@ -159,35 +166,73 @@ int main(int argc, char **argv) {
     if (ret < 0) {
         ERROR("Failed to listen: %s", strerror(errno));
     }
+    DEBUG("Now socket (sockid=%d) is listening.", sockfd);
 
-    int conn_sockfd;
-    conn_sockfd = mtcp_accept(mctx, sockfd, NULL, NULL);
-    if (conn_sockfd > 0)
-        DEBUG("Accepted new connection with new socket id %d", conn_sockfd);
-    else {
-        ERROR("mtcp_accept() failed: %s", strerror(errno));
-        mtcp_close(mctx, sockfd);
-        return -1;
+    int events_ready, i;
+    int read_total = 0;
+    int finished = 0;
+    while (!finished) {
+        events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+        if (events_ready > 0) {
+            for (i = 0; i < events_ready; i++) {
+                if (events[i].data.sockid == sockfd) { // listening socket
+                    conn_sockfd = mtcp_accept(mctx, sockfd, NULL, NULL);
+                    if (conn_sockfd >= 0) {
+                        DEBUG("Accepted new connection with new socket %d.", conn_sockfd);
+                        ev.events = MTCP_EPOLLIN;
+                        ev.data.sockid = conn_sockfd;
+                        mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_ADD, conn_sockfd, &ev);
+                    }
+                    else { // mtcp_accept() error handling
+                        perror("mtcp_accept()");
+                        exit(-1);
+                    }
+                }
+                else { // conenction socket with client
+                    if (events[i].events & MTCP_EPOLLIN) {
+                        // assumption: only 1 client will connect to this server
+                        ret = mtcp_read(mctx, events[i].data.sockid, buf + read_total, recv_size - read_total);
+                        if (ret > 0) {
+                            DEBUG("Read %d bytes", ret);
+                            read_total += ret;
+                        }
+                        else if (ret == 0) { // maybe this is FIN-received?
+                            mtcp_close(mctx, events[i].data.sockid);
+                            mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_DEL, events[i].data.sockid, &ev);
+                            // the last poniter, &ev, will be just ignored; this is given to be backward-compatible. See epoll_ctl() man page.
+                            DEBUG("Closed connection socket and deleted it from epoll instance.");
+                            finished = 1;
+                        }
+                        else { // mtcp_read() error handling
+                            if (errno == ENOTCONN) {
+                                mtcp_close(mctx, events[i].data.sockid);
+                                mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_DEL, events[i].data.sockid, &ev);
+                                // the last poniter, &ev, will be just ignored; this is given to be backward-compatible. See epoll_ctl() man page.
+                                DEBUG("Closed connection socket and deleted it from epoll instance.");
+                                finished = 1;
+                            }
+                            else {
+                                perror("mtcp_read()");
+                                exit(-1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else { // mtcp_epoll_wait() error handling
+            perror("mtcp_epoll_wait()");
+            exit(-1); 
+        }
+
     }
 
-    // read data
-    int read, left, total_read = 0;
-    left = recv_size;
 
-    while (left > 0) {
-        read = mtcp_read(mctx, conn_sockfd, buf, recv_size);
-        left -= read;
-        total_read += read;
-    }
-
-
-    mtcp_close(mctx, conn_sockfd);
-    DEBUG("Client connected socket closed.");
     mtcp_close(mctx, sockfd);
-    DEBUG("Server socket closed.");
+    DEBUG("Server (listening) socket closed.");
 
     printf("\n");
-    printf("Total amount of data received: %d bytes\n", total_read);
+    printf("Total amount of data received: %d bytes\n", read_total);
 
     mtcp_destroy_context(mctx);
     free(ctx);
