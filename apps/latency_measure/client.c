@@ -6,9 +6,10 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <errno.h>
-
+#include <assert.h>
 
 #include <mtcp_api.h>
+#include <mtcp_epoll.h>
 
 #define CONCURRENCY		1
 #define IP_RANGE 		1
@@ -35,12 +36,14 @@ int main(int argc, char **argv) {
     struct mtcp_conf mcfg;
     struct thread_context *ctx;
     mctx_t mctx;
+    struct mtcp_epoll_event *events;
+    struct mtcp_epoll_event ev;
     int core = 0;
 
     // sockets
 	// struct sockaddr_in saddr;
     struct sockaddr_in daddr;
-    int sockfd;
+    int sockfd, epfd;
 
     // time
     struct timespec t1, t2;
@@ -116,13 +119,15 @@ int main(int argc, char **argv) {
     DEBUG("Creating pool of TCP source ports...");
     mtcp_init_rss(mctx, INADDR_ANY, IP_RANGE, daddr.sin_addr.s_addr, daddr.sin_port);
 
-    // Create epoller?
-    // ep_id = mtcp_epoll_create(mctx, mcfg.max_num_buffers);
-    // events = (struct mtcp_epoll_event *) calloc(mcfg.max_num_buffers, sizeof(struct mtcp_epoll_event));
-    // if (!events) {
-    //     ERROR("Failed to allocate events.");
-    //     return -1;
-    // }
+    printf("\n\n");
+
+    // Create epoll instance
+    epfd = mtcp_epoll_create(mctx, mcfg.max_num_buffers);
+    events = (struct mtcp_epoll_event *) calloc(mcfg.max_num_buffers, sizeof(struct mtcp_epoll_event));
+    if (!events) {
+        ERROR("Failed to allocate events.");
+        return -1;
+    }
 
     // Create socket
     DEBUG("Creating socket...");
@@ -132,46 +137,84 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    // ret = mtcp_setsock_nonblock(mctx, sockfd);
-    // if (ret < 0 ) {
-    //     ERROR("Failed to set socket in nonblocking mode.");
-    //     return -1;
-    // }
+    // Set client socket as nonblocking mode
+    ret = mtcp_setsock_nonblock(mctx, sockfd);
+    if (ret < 0 ) {
+        ERROR("Failed to set socket in nonblocking mode.");
+        return -1;
+    }
 
+    // Register client socket to epoll instance
     // ev.events = MTCP_EPOLLIN;
-    // ev.data.sockid = sockfd;
-    // mtcp_epoll_ctl(mctx, ep_id, MTCP_EPOLL_CTL_ADD, sockfd, &ev);
+    ev.events = MTCP_EPOLLOUT;
+    ev.data.sockid = sockfd;
+    mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_ADD, sockfd, &ev);
 
 
     // This is client program who sends data
     DEBUG("Connecting socket...");
     ret = mtcp_connect(mctx, sockfd, (struct sockaddr *) &daddr, sizeof(struct sockaddr_in));
     if (ret < 0) {
-        ERROR("mtcp_connect failed.");
+        ERROR("mtcp_connect() returned < 0.");
+        // perror("mtcp_connect()");
+        // exit(-1);
         if (errno != EINPROGRESS) {
-            perror("mtcp_connect");
-            mtcp_close(mctx, sockfd);
-            return -1;
+            perror("mtcp_connect()");
+            exit(-1);
+            // mtcp_close(mctx, sockfd);
+            // mtcp_close(mctx, epfd); // Is this needed?
+            // return -1;
         }
     }
     DEBUG("Connection created.");
 
-
-
-
     // Send and meausre time taken
-    int wrote, left;
-    left = send_size;
+    int events_ready;
+    int wrote_total = 0;
+    DEBUG("Start data send.");
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    while (left > 0) {
-        wrote = mtcp_write(mctx, sockfd, buf, send_size);
-        left -= wrote;
+    while (1) {
+        if (wrote_total < send_size) {
+            events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+            if (events_ready > 0) {
+                if (events_ready > 1) {
+                    ERROR("Something wrong - only registered 1 socket to epoll instance, but epoll returned more than 1.");
+                    exit(-1);
+                }
+                if (events[0].events & MTCP_EPOLLOUT) {
+                    assert(events[0].data.sockid == sockfd);
+                    ret = mtcp_write(mctx, events[0].data.sockid, buf + wrote_total, send_size - wrote_total);
+                    if (ret >= 0) {
+                        DEBUG("Wrote %d bytes.", ret);
+                        wrote_total += ret;
+                    }
+                    else { // mtcp_write() error handling
+                        if (errno == ENOTCONN) {
+                            DEBUG("The socket is not writeable.");
+                            break;
+                        }
+                        else {
+                            perror("mtcp_write()");
+                            exit(-1);
+                        }
+                    }
+                }
+            }
+            else { // mtcp_epoll_wait() error handling
+                perror("mtcp_epoll_wait()");
+                exit(-1);
+            }
+        }
+        else // finished data send
+            break;
     }
     clock_gettime(CLOCK_MONOTONIC, &t2);
+    DEBUG("Finished data send.");
 
 
     mtcp_close(mctx, sockfd);
-    DEBUG("Socket closed.");
+    mtcp_close(mctx, epfd);
+    DEBUG("Sockets are closed.");
 
     printf("\n");
     int elapsed_time = 0; // in nanoseconds
