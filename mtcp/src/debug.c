@@ -155,6 +155,103 @@ done:
 	thread_printf(mtcp, mtcp->log_fp, "len=%d\n", len);
 }
 /*----------------------------------------------------------------------------*/
+
+void
+DumpPacketToStdout(mtcp_manager_t mtcp, char *buf, int len, char *step, int ifindex)
+{
+	struct ethhdr *ethh;
+	struct iphdr *iph;
+	struct udphdr *udph;
+	struct tcphdr *tcph;
+	uint8_t *t;
+
+	if (ifindex >= 0)
+		printf("%s %d %u", step, ifindex, mtcp->cur_ts);
+	else
+		printf("%s ? %u", step, mtcp->cur_ts);
+
+	ethh = (struct ethhdr *)buf;
+	if (ntohs(ethh->h_proto) != ETH_P_IP) {
+		printf("%02X:%02X:%02X:%02X:%02X:%02X -> %02X:%02X:%02X:%02X:%02X:%02X ",
+				ethh->h_source[0],
+				ethh->h_source[1],
+				ethh->h_source[2],
+				ethh->h_source[3],
+				ethh->h_source[4],
+				ethh->h_source[5],
+				ethh->h_dest[0],
+				ethh->h_dest[1],
+				ethh->h_dest[2],
+				ethh->h_dest[3],
+				ethh->h_dest[4],
+				ethh->h_dest[5]);
+
+		printf("protocol %04hx  ", ntohs(ethh->h_proto));
+		goto done;
+	}
+
+	printf(" ");
+
+	iph = (struct iphdr *)(ethh + 1);
+	udph = (struct udphdr *)((uint32_t *)iph + iph->ihl);
+	tcph = (struct tcphdr *)((uint32_t *)iph + iph->ihl);
+
+	t = (uint8_t *)&iph->saddr;
+	printf("%u.%u.%u.%u", t[0], t[1], t[2], t[3]);
+	if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP)
+		printf("(%d)", ntohs(udph->source));
+
+	printf(" -> ");
+
+	t = (uint8_t *)&iph->daddr;
+	printf("%u.%u.%u.%u", t[0], t[1], t[2], t[3]);
+
+	if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP)
+		printf("(%d)", ntohs(udph->dest));
+
+	printf(" IP_ID=%d", ntohs(iph->id));
+	printf(" TTL=%d ", iph->ttl);
+
+	if (ip_fast_csum(iph, iph->ihl)) {
+		__sum16 org_csum, correct_csum;
+		
+		org_csum = iph->check;
+		iph->check = 0;
+		correct_csum = ip_fast_csum(iph, iph->ihl);
+		printf("(bad checksum %04x should be %04x) ",
+				ntohs(org_csum), ntohs(correct_csum));
+		iph->check = org_csum;
+	}
+
+	switch (iph->protocol) {
+	case IPPROTO_TCP:
+		printf("TCP ");
+		
+		if (tcph->syn)
+			printf("S ");
+		if (tcph->fin)
+			printf("F ");
+		if (tcph->ack)
+			printf("A ");
+		if (tcph->rst)
+			printf("R ");
+
+		printf("seq %u ", ntohl(tcph->seq));
+		if (tcph->ack)
+			printf("ack %u ", ntohl(tcph->ack_seq));
+		printf("WDW=%u ", ntohs(tcph->window));
+		break;
+	case IPPROTO_UDP:
+		printf("UDP ");
+		break;
+	default:
+		printf("protocol %d ", iph->protocol);
+		goto done;
+	}
+done:
+	printf("len=%d\n", len);
+}
+/*----------------------------------------------------------------------------*/
 void
 DumpIPPacket(mtcp_manager_t mtcp, const struct iphdr *iph, int len)
 {
