@@ -166,9 +166,9 @@ DumpPacketToStdout(mtcp_manager_t mtcp, char *buf, int len, char *step, int ifin
 	uint8_t *t;
 
 	if (ifindex >= 0)
-		printf("%s %d %u", step, ifindex, mtcp->cur_ts);
+		printf("%s ifidx=%d ts=%u", step, ifindex, mtcp->cur_ts);
 	else
-		printf("%s ? %u", step, mtcp->cur_ts);
+		printf("%s ifidx=? ts=%u", step, mtcp->cur_ts);
 
 	ethh = (struct ethhdr *)buf;
 	if (ntohs(ethh->h_proto) != ETH_P_IP) {
@@ -209,6 +209,7 @@ DumpPacketToStdout(mtcp_manager_t mtcp, char *buf, int len, char *step, int ifin
 	if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP)
 		printf("(%d)", ntohs(udph->dest));
 
+	printf("\n  ");
 	printf(" IP_ID=%d", ntohs(iph->id));
 	printf(" TTL=%d ", iph->ttl);
 

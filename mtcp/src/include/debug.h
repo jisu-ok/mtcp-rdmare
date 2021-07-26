@@ -228,6 +228,9 @@
 void 
 DumpPacket(mtcp_manager_t mtcp, char *buf, int len, char *step, int ifindex);
 
+void 
+DumpPacketToStdout(mtcp_manager_t mtcp, char *buf, int len, char *step, int ifindex);
+
 void
 DumpIPPacket(mtcp_manager_t mtcp, const struct iphdr *iph, int len);
 
