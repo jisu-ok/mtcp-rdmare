@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
         perror("mtcp_listen()");
     }
 
-    DEBUG("Now socket (sockfd=%d) is listening.", listen_sockfd);
+    DEBUG("Now socket (sockfd=%d) is listening.\n", listen_sockfd);
 
     // int i;
     // int read_total = 0;
@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
                     else if (ret == 0) { // FIN-received
                         mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_DEL, event_sock, &ev); // the last pointer (&ev) will be ignored
                         mtcp_close(mctx, event_sock);
-                        DEBUG("Closed connection socket (sockfd=%d)", event_sock);
+                        DEBUG("Closed connection socket (sockfd=%d)\n", event_sock);
                     }
                     else {
                         perror("mtcp_read()");
