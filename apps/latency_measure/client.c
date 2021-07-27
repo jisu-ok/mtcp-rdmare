@@ -7,16 +7,21 @@
 #include <time.h>
 #include <errno.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
 
 #define CONCURRENCY		1
 #define IP_RANGE 		1
+#define REQEUST_SIZE    512
 
 #define DEBUG(fmt, args...)	fprintf(stderr, "[DEBUG] " fmt "\n", ## args)
 #define ERROR(fmt, args...)	fprintf(stderr, fmt "\n", ## args)
 
+int time_diff_nsec(struct timespec t1, struct timespec t2) {
+    return (t2.tv_nsec - t1.tv_nsec) + 1000000000 * (t2.tv_sec - t1.tv_sec);
+}
 
 struct thread_context
 {
@@ -38,6 +43,7 @@ int main(int argc, char **argv) {
     mctx_t mctx;
     struct mtcp_epoll_event *events;
     struct mtcp_epoll_event ev;
+    int events_ready;
     int core = 0;
 
     // sockets
@@ -47,31 +53,41 @@ int main(int argc, char **argv) {
 
     // time
     struct timespec t1, t2;
+    // struct timespec t3, t4;
 
-    // send_buffer
-    char *buf;
+    // buffer
+    char *send_buf, *recv_buf;
 
-    // the amount to send in bytes
-    int send_size;
+    // the amount to reqeust in bytes
+    int fetch_size;
 
 
     if (argc < 4) {
-        printf("Usage: ./client [IPv4] [port] [amount to send in bytes]\n");
+        printf("Usage: ./client [IPv4] [port] [amount to request in bytes]\n");
         return -1;
     }
     daddr.sin_family = AF_INET;
     daddr.sin_addr.s_addr = inet_addr(argv[1]);
     daddr.sin_port = htons(atoi(argv[2]));
-    send_size = atoi(argv[3]);
+    fetch_size = atoi(argv[3]);
 
-    // Send buffer allocation    
-    buf = malloc(send_size);
-    if (!buf) {
-        ERROR("malloc() for buf failed.");
+    // Send buffer allocation and fill request string in
+    send_buf = malloc(REQEUST_SIZE);
+    if (!send_buf) {
+        ERROR("malloc() for send_buf failed.");
         return -1;
     }
-    memset(buf, 0xAA, send_size);
-    // buf[send_size-1] = '\0';
+    memset(send_buf, 0, REQEUST_SIZE);
+    sprintf(send_buf, "Request: give me %d bytes of data!", fetch_size);
+
+    // Recv buffer allocation    
+    recv_buf = malloc(fetch_size + 1);
+    if (!recv_buf) {
+        ERROR("malloc() for recv_buf failed.");
+        return -1;
+    }
+    memset(recv_buf, 0, fetch_size);
+    recv_buf[fetch_size] = '\0';
 
 
     // This must be done before mtcp_init()
@@ -80,11 +96,11 @@ int main(int argc, char **argv) {
     mtcp_setconf(&mcfg);
 
     // Seed RNG
-    srand(time(NULL));
+    // srand(time(NULL));
 
     // Init mTCP
     DEBUG("Initializing mTCP...");
-    if (mtcp_init("client.conf")) {
+    if (mtcp_init("app.conf")) {
         ERROR("Failed to initialize mTCP");
         return -1;
     }
@@ -146,7 +162,7 @@ int main(int argc, char **argv) {
 
     // Register client socket to epoll instance
     // ev.events = MTCP_EPOLLIN;
-    ev.events = MTCP_EPOLLOUT;
+    ev.events = MTCP_EPOLLIN | MTCP_EPOLLOUT;
     ev.data.sockid = sockfd;
     mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_ADD, sockfd, &ev);
 
@@ -154,62 +170,208 @@ int main(int argc, char **argv) {
     // This is client program who sends data
     DEBUG("Connecting socket...");
     ret = mtcp_connect(mctx, sockfd, (struct sockaddr *) &daddr, sizeof(struct sockaddr_in));
+
     if (ret < 0) {
         ERROR("mtcp_connect() returned < 0.");
-        // perror("mtcp_connect()");
-        // exit(-1);
         if (errno != EINPROGRESS) {
             perror("mtcp_connect()");
             exit(-1);
-            // mtcp_close(mctx, sockfd);
-            // mtcp_close(mctx, epfd); // Is this needed?
-            // return -1;
         }
     }
-    DEBUG("Connection created.");
 
-    // Send and meausre time taken
-    int events_ready;
-    int wrote_total = 0;
-    DEBUG("Start data send.");
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    while (1) {
-        if (wrote_total < send_size) {
-            events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
-            if (events_ready > 0) {
-                if (events_ready > 1) {
-                    ERROR("Something wrong - only registered 1 socket to epoll instance, but epoll returned more than 1.");
-                    exit(-1);
-                }
-                if (events[0].events & MTCP_EPOLLOUT) {
-                    assert(events[0].data.sockid == sockfd);
-                    ret = mtcp_write(mctx, events[0].data.sockid, buf + wrote_total, send_size - wrote_total);
-                    if (ret >= 0) {
-                        DEBUG("Wrote %d bytes.", ret);
-                        wrote_total += ret;
-                    }
-                    else { // mtcp_write() error handling
-                        if (errno == ENOTCONN) {
-                            DEBUG("The socket is not writeable.");
-                            break;
-                        }
-                        else {
-                            perror("mtcp_write()");
-                            exit(-1);
-                        }
-                    }
-                }
-            }
-            else { // mtcp_epoll_wait() error handling
-                perror("mtcp_epoll_wait()");
-                exit(-1);
-            }
-        }
-        else // finished data send
+    events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+    assert(events_ready == 1);
+    int sock_err, sock_err_len = sizeof(int);
+    ret = mtcp_getsockopt(mctx, sockfd, SOL_SOCKET, SO_ERROR, &sock_err, (socklen_t *) &sock_err_len);
+    if (ret < 0) {
+        perror("mtcp_getsockopt()");
+        exit(-1);
+    }
+    if (sock_err != 0) {
+        DEBUG("connect() didn't complete well: %s", strerror(sock_err));
+        exit(-1);
+    }
+    DEBUG("Connection established!");
+
+    // if (events[0].events & MTCP_EPOLLIN)
+    //     DEBUG("MTCP_EPOLLIN");
+    // if (events[0].events & MTCP_EPOLLOUT)
+    //     DEBUG("MTCP_EPOLLOUT");
+
+
+    /* ----------------------------------------------------------------------- */
+    // DEBUG("Start request.");
+    // clock_gettime(CLOCK_MONOTONIC, &t1);    
+    // // Send request
+    // int send_size = strlen(send_buf);
+    // int wrote_total = 0;
+    // if (events[0].events & MTCP_EPOLLOUT)   {
+    //     ret = mtcp_write(mctx, events[0].data.sockid, send_buf, send_size);
+    //     if (ret >= 0)
+    //         wrote_total += ret;
+    //     else {
+    //         perror("mtcp_write()");
+    //         exit(-1);
+    //     }
+    // }
+    // else {
+    //     DEBUG("Something wrong");
+    //     exit(-1);
+    // }
+
+    // // If write isn't done in the first try
+    // while (1) {
+    //     if (wrote_total < send_size) {
+    //         events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+    //         if (events_ready > 0) {
+    //             assert(events_ready == 1);
+    //             if (events[0].events & MTCP_EPOLLOUT) {
+    //                 ret = mtcp_write(mctx, events[0].data.sockid, send_buf + wrote_total, send_size - wrote_total);
+    //                 if (ret >= 0)
+    //                     wrote_total += ret;
+    //                 else {
+    //                     perror("mtcp_write()");
+    //                     exit(-1);
+    //                 }
+    //             }
+    //         }
+    //         else {
+    //             perror("mtcp_epoll_wait()");
+    //             exit(-1);
+    //         }
+    //     }
+    //     else
+    //         break;
+    // }
+
+    // // DEBUG("Receive data from server");
+    // clock_gettime(CLOCK_MONOTONIC, &t2);    
+    // // Read response
+    // int read_total = 0;
+
+    // // first, check if there already exist readable event
+    // if ((events[0].data.sockid == sockfd) && (events[0].events & MTCP_EPOLLIN)) {
+    //     ret = mtcp_read(mctx, events[0].data.sockid, recv_buf, fetch_size);
+    //     if (ret > 0) {
+    //         DEBUG("Received %d bytes data.", ret);
+    //         read_total += ret;
+    //     }
+    //     else if (ret == 0) {
+    //         DEBUG("Server closed socket before fetch is done.");
+    //         exit(-1);
+    //     }
+    //     else {
+    //         perror("mtcp_read()");
+    //         exit(-1);
+    //     }
+    // }
+
+    // clock_gettime(CLOCK_MONOTONIC, &t3);    
+
+    // // epoll for read
+    // while (read_total < fetch_size) {
+    //     events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+    //     if (events_ready > 0) {
+    //         assert(events_ready == 1);
+    //         if (events[0].events & MTCP_EPOLLIN) {
+    //             ret = mtcp_read(mctx, events[0].data.sockid, recv_buf + read_total, fetch_size - read_total);
+    //             if (ret > 0)
+    //                 read_total += ret;
+    //             else if (ret == 0) {
+    //                 DEBUG("Server closed socket before fetch is done.");
+    //                 exit(-1);
+    //             }
+    //             else {
+    //                 perror("mtcp_read()");
+    //                 exit(-1);
+    //             }
+    //         }
+    //     }
+    //     else { // mtcp_epoll_wait() error handling
+    //         perror("mtcp_epoll_wait()");
+    //         exit(-1);
+    //     }
+    // }
+
+    // clock_gettime(CLOCK_MONOTONIC, &t4);
+    // DEBUG("Data fetch finished.");
+    /* ----------------------------------------------------------------------- */
+
+    /* ----------------------------------------------------------------------- */
+    // Simplified version
+    int send_size = strlen(send_buf);
+    DEBUG("Start request.");
+    clock_gettime(CLOCK_MONOTONIC, &t1);    
+    ret = mtcp_write(mctx, sockfd, send_buf, send_size);
+    // DEBUG("Wrote %d bytes.", ret);
+    int cnt = 0;
+    while(1) {
+        cnt += 1;
+        events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+        if (events[0].events & MTCP_EPOLLIN)
             break;
     }
-    clock_gettime(CLOCK_MONOTONIC, &t2);
-    DEBUG("Finished data send.");
+    // events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+    // assert(events[0].events & MTCP_EPOLLIN);
+    ret = mtcp_read(mctx, sockfd, recv_buf, fetch_size);
+    // if (ret < 0)
+    //     perror("mtcp_read()");
+    // DEBUG("Read %d bytes.", ret);
+    clock_gettime(CLOCK_MONOTONIC, &t2);    
+    DEBUG("Data fetch finished. cnt = %d", cnt);
+
+    /* ----------------------------------------------------------------------- */
+
+
+
+    // Send and meausre time taken
+    // int cnt = 0;
+    // int wrote_total = 0;
+    // DEBUG("Start data send.");
+    // clock_gettime(CLOCK_MONOTONIC, &t1);
+    // while (1) {
+    //     if (wrote_total < send_size) {
+    //         // DEBUG("Before epoll_wait()...");
+    //         events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+    //         clock_gettime(CLOCK_MONOTONIC, &t3);
+    //         cnt += 1;
+    //         if (events_ready > 0) {
+    //             if (events_ready > 1) {
+    //                 ERROR("Something wrong - only registered 1 socket to epoll instance, but epoll returned more than 1.");
+    //                 exit(-1);
+    //             }
+    //             if (events[0].events & MTCP_EPOLLOUT) {
+    //                 // assert(events[0].data.sockid == sockfd);
+    //                 // clock_gettime(CLOCK_MONOTONIC, &t3);
+    //                 ret = mtcp_write(mctx, events[0].data.sockid, buf + wrote_total, send_size - wrote_total);
+    //                 // clock_gettime(CLOCK_MONOTONIC, &t4);
+    //                 // printf("mtcp_write() took %ld nsec.\n", t4.tv_nsec - t3.tv_nsec + 1000000000*(t4.tv_sec - t3.tv_sec));
+    //                 if (ret >= 0) {
+    //                     // DEBUG("Wrote %d bytes.", ret);
+    //                     wrote_total += ret;
+    //                 }
+    //                 else { // mtcp_write() error handling
+    //                     if (errno == ENOTCONN) {
+    //                         // DEBUG("The socket is not writeable.");
+    //                         break;
+    //                     }
+    //                     else {
+    //                         perror("mtcp_write()");
+    //                         exit(-1);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         else { // mtcp_epoll_wait() error handling
+    //             perror("mtcp_epoll_wait()");
+    //             exit(-1);
+    //         }
+    //     }
+    //     else // finished data send
+    //         break;
+    // }
+    // clock_gettime(CLOCK_MONOTONIC, &t2);
+    // DEBUG("Finished data send. cnt=%d, t3-t1 = %ld", cnt, t3.tv_nsec - t1.tv_nsec + 1000000000*(t3.tv_sec - t1.tv_sec));
 
 
     mtcp_close(mctx, sockfd);
@@ -217,14 +379,20 @@ int main(int argc, char **argv) {
     DEBUG("Sockets are closed.");
 
     printf("\n");
-    int elapsed_time = 0; // in nanoseconds
-    elapsed_time += (t2.tv_nsec - t1.tv_nsec);
-    elapsed_time += (t2.tv_sec - t1.tv_sec) * 1000000000;
-    printf("Time taken to send %d bytes: %d nsec\n", send_size, elapsed_time);
+    printf("Received data: %s\n", recv_buf);
+    printf("Total Time taken to fetch %d bytes: %d nsec\n", fetch_size, time_diff_nsec(t1, t2));
+
+    // printf("Detailed:\n");
+    // printf("  t2 - t1: %d\n", time_diff_nsec(t1, t2));
+    // printf("  t3 - t2: %d\n", time_diff_nsec(t2, t3));
+    // printf("  t4 - t3: %d\n", time_diff_nsec(t3, t4));
 
     mtcp_destroy_context(mctx);
     free(ctx);
     mtcp_destroy();
 
+    free(events);
+    free(send_buf);
+    free(recv_buf);
     return 0;
 }
