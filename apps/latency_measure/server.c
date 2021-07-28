@@ -278,17 +278,17 @@ int main(int argc, char **argv) {
                 ev.data.sockid = conn_sockfd;
                 mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_ADD, conn_sockfd, &ev);
             }
-            else {
+            else { // event on connection socket
                 if (events[i].events & MTCP_EPOLLIN) {
                     ret = mtcp_read(mctx, event_sock, recv_buf, REQEUST_SIZE);
                     if (ret > 0) { // data received
-                        DEBUG("Read %d bytes from client: %s", ret, recv_buf);
+                        // DEBUG("Read %d bytes from client: %s", ret, recv_buf);
                         ret = mtcp_write(mctx, event_sock, send_buf, send_size);
                         if (ret < 0) {
                             perror("mtcp_write()");
                             exit(-1);
                         }
-                        DEBUG("Sent %d bytes to client.", ret);
+                        // DEBUG("Sent %d bytes to client.", ret);
                     }
                     else if (ret == 0) { // FIN-received
                         mtcp_epoll_ctl(mctx, epfd, MTCP_EPOLL_CTL_DEL, event_sock, &ev); // the last pointer (&ev) will be ignored
