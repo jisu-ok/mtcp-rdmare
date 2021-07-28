@@ -83,13 +83,17 @@ endif
 
 all: client server
 
+get_clock.o: get_clock.c
+	$(MSG) "   CC $<"
+	${CC} -g -c $< ${CFLAGS} ${INC}
+
 client.o: client.c
 	$(MSG) "   CC $<"
 	${CC} -g -c $< ${CFLAGS} ${INC}
 
-client: client.o
+client: client.o get_clock.o
 	$(MSG) "   LD $<"
-	${CC} $< ${INC} ${UTIL_OBJ} -g -o $@ ${LIBS} 
+	${CC} $^ ${INC} ${UTIL_OBJ} -g -o $@ ${LIBS} 
 
 server.o: server.c
 	$(MSG) "   CC $<"
