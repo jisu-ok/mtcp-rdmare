@@ -14,6 +14,7 @@
 #include <infiniband/verbs.h>
 
 #define ENABLE_SEND_INLINE
+#define ENABLE_SEND_SIGNAL
 
 #define MAX_PKT_BURST			64
 
@@ -138,7 +139,7 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 			.max_send_sge = 1,
 			.max_recv_wr = RQ_NUM_DESC,
 			.max_recv_sge = 1,
-			.max_inline_data = 512,
+			.max_inline_data = 972, // measured max number for ConnectX-4
 		},
 		.qp_type = IBV_QPT_RAW_PACKET
 	};
@@ -166,10 +167,10 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 		TRACE_ERROR("Failed modify QP to init\n");
 		exit(EXIT_FAILURE);
 	}
-	memset(&qp_attr, 0, sizeof(qp_attr));
 	printf(">>>>J: 7. Initialize QP (receive ring) and assign a port (rdmare_init_handle())\n");
 
 	/* Move the ring to ready-to-receive and then ready-to-send */
+	memset(&qp_attr, 0, sizeof(qp_attr));
 	qp_flags = IBV_QP_STATE;
 	qp_attr.qp_state = IBV_QPS_RTR;
 	ret = ibv_modify_qp(rpc->qp, &qp_attr, qp_flags);
@@ -190,19 +191,19 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 	/* Allocate memory for send/receive packet buffer */
 	int send_bufsize = ENTRY_SIZE*SQ_NUM_DESC; /* maximum size of data to be access directly by HW */
 	rpc->send_pktbuf = malloc(send_bufsize);
-	memset(rpc->send_pktbuf, 0, send_bufsize); // optional?
 	if (!rpc->send_pktbuf) {
 		TRACE_ERROR("Couldn't allocate memory for send packet buffer\n");
 		exit(EXIT_FAILURE);
 	}
+	memset(rpc->send_pktbuf, 0, send_bufsize); // optional?
 
 	int recv_bufsize = ENTRY_SIZE*RQ_NUM_DESC;
 	rpc->recv_pktbuf = malloc(recv_bufsize);
-	memset(rpc->recv_pktbuf, 0, recv_bufsize); //optional?
 	if (!rpc->recv_pktbuf) {
 		TRACE_ERROR("Couldn't allocate memory for recv packet buffer\n");
 		exit(EXIT_FAILURE);
 	}
+	memset(rpc->recv_pktbuf, 0, recv_bufsize); //optional?
 	printf(">>>>J: 9. Allocate memory for pkt buffer (rdmare_init_handle())\n");
 
 	/* Register the user memory so it can be accessed by the HW directly */
@@ -231,8 +232,10 @@ rdmare_init_handle(struct mtcp_thread_context *ctx)
 #ifdef ENABLE_SEND_INLINE
 	rpc->send_wr.send_flags = IBV_SEND_INLINE;
 #endif
-	rpc->send_wr.send_flags = IBV_SEND_SIGNALED;
 
+#ifdef ENABLE_SEND_SIGNAL
+	rpc->send_wr.send_flags = IBV_SEND_SIGNALED;
+#endif
 
 	/* Some initialization for receive - attach all buffers to the ring (?) */
 	rpc->recv_sg_entry.length = ENTRY_SIZE;
@@ -379,6 +382,8 @@ rdmare_send_pkts(struct mtcp_thread_context *ctx, int nif)
 	// printf(">>>>J: After ibv_post_send() (rdmare_send_pkts())\n");
 
 	memset(&wc, 0, sizeof(wc));
+
+#ifdef ENABLE_SEND_SIGNAL
 	msgs_completed = 0;
 	/* poll for completion */
 	do {
@@ -386,12 +391,13 @@ rdmare_send_pkts(struct mtcp_thread_context *ctx, int nif)
 	} while (msgs_completed == 0);
 
 	if (msgs_completed > 0) {
-		printf("Send: message %ld, status is %d, sent size %d\n", wc.wr_id, wc.status, rpc->send_pkt_size);
+		// printf("Send: message %ld, status is %d, sent size %d\n", wc.wr_id, wc.status, rpc->send_pkt_size);
 	}
 	else if (msgs_completed < 0) {
 		TRACE_ERROR("Polling error\n");
 		exit(EXIT_FAILURE);
 	}
+#endif
 
 	rpc->send_pkt_size = 0;
 
@@ -442,7 +448,7 @@ rdmare_recv_pkts(struct mtcp_thread_context *ctx, int ifidx)
 	/* poll for completion */
 	msgs_completed = ibv_poll_cq(rpc->recv_cq, 1, &wc);
 	if (msgs_completed > 0) {
-		printf("Receive: message %ld, status is %d, size %d\n", wc.wr_id, wc.status, wc.byte_len);
+		// printf("Receive: message %ld, status is %d, size %d\n", wc.wr_id, wc.status, wc.byte_len);
 		rpc->recv_pkt_size[wc.wr_id] = wc.byte_len;
 		rpc->recv_pkt_idx = wc.wr_id;
 		
