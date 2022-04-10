@@ -9,8 +9,13 @@
 #include <assert.h>
 #include <unistd.h>
 
+#include "get_clock.h"
+
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
+
+#include <rte_cycles.h>
+
 
 #define CONCURRENCY		1
 #define IP_RANGE 		1
@@ -21,6 +26,38 @@
 
 int time_diff_nsec(struct timespec t1, struct timespec t2) {
     return (t2.tv_nsec - t1.tv_nsec) + 1000000000 * (t2.tv_sec - t1.tv_sec);
+}
+
+int compare(const void *a, const void *b) {
+    double num1 = *(double *)a;
+    double num2 = *(double *)b;
+
+    if (num1 < num2)
+        return -1;
+
+    if (num1 > num2)
+        return 1;
+
+    return 0;
+}
+
+double median(double *vals, int n) {
+    if (n % 2 == 1) // odd number of elements
+        return vals[(n-1) / 2];
+    else // even number of elements
+        return (vals[n/2 - 1] + vals[n/2]) / 2;
+}
+
+void compare_data(char *answer, char *received, int n) {
+    int i;
+    for (i = 0; i < n; i++) {
+        if (answer[i] != received[i]) {
+            ERROR("Received data is wrong: %d-th byte should be %c, but received %c", i, answer[i], received[i]);
+            exit(-1);
+        }
+    }
+    DEBUG("Received data is correct!");
+    return;
 }
 
 struct thread_context
@@ -44,7 +81,7 @@ int main(int argc, char **argv) {
     struct mtcp_epoll_event *events;
     struct mtcp_epoll_event ev;
     int events_ready;
-    int core = 0;
+    int core = 13;
 
     // sockets
 	// struct sockaddr_in saddr;
@@ -52,11 +89,11 @@ int main(int argc, char **argv) {
     int sockfd, epfd;
 
     // time
-    struct timespec t1, t2;
+    // struct timespec t1, t2;
     // struct timespec t3, t4;
 
     // buffer
-    char *send_buf, *recv_buf;
+    char *send_buf, *recv_buf, *answer_buf;
 
     // the amount to reqeust in bytes
     int fetch_size;
@@ -78,7 +115,7 @@ int main(int argc, char **argv) {
         return -1;
     }
     memset(send_buf, 0, REQEUST_SIZE);
-    sprintf(send_buf, "Request: give me %d bytes of data!", fetch_size);
+    sprintf(send_buf, "Request - give me %d bytes of data!", fetch_size);
 
     // Recv buffer allocation    
     recv_buf = malloc(fetch_size + 1);
@@ -89,10 +126,21 @@ int main(int argc, char **argv) {
     memset(recv_buf, 0, fetch_size);
     recv_buf[fetch_size] = '\0';
 
+    // Answer buffer allocation and set
+    answer_buf = malloc(fetch_size);
+    if (!answer_buf) {
+        ERROR("malloc() for answer_buf failed.");
+        return -1;
+    }
+    int j;
+    for (j=0; j < fetch_size; j++)
+        answer_buf[j] = 0x41 + (j % 26);
+
+
 
     // This must be done before mtcp_init()
     mtcp_getconf(&mcfg);
-    mcfg.num_cores = 1;
+    mcfg.num_cores = 16;
     mtcp_setconf(&mcfg);
 
     // Seed RNG
@@ -299,26 +347,87 @@ int main(int argc, char **argv) {
 
     /* ----------------------------------------------------------------------- */
     // Simplified version
+    int iteration = 1000;
+
+    double mhz = get_cpu_mhz(0);
+    DEBUG("CPU frequency: %f", mhz);
+    // cycles_t c1, c2;
+    uint64_t c1, c2;
+    // cycles_t c3, c4;
+    double latency_vals[iteration];
+
+    int i;
     int send_size = strlen(send_buf);
-    DEBUG("Start request.");
-    clock_gettime(CLOCK_MONOTONIC, &t1);    
-    ret = mtcp_write(mctx, sockfd, send_buf, send_size);
-    // DEBUG("Wrote %d bytes.", ret);
-    int cnt = 0;
-    while(1) {
-        cnt += 1;
-        events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
-        if (events[0].events & MTCP_EPOLLIN)
-            break;
+    int read_total;
+
+    // clock_gettime(CLOCK_MONOTONIC, &t1);    
+    // clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    for (i=0; i < iteration; i++) {
+        // DEBUG("Start request.");
+        read_total = 0;
+
+        // c1 = get_cycles();
+        c1 = rte_get_tsc_cycles();
+        ret = mtcp_write(mctx, sockfd, send_buf, send_size);
+        // c4 = get_cycles();
+
+        if (ret <= 0) {
+            perror("mtcp_write()");
+            exit(-1);
+        }
+        // DEBUG("Wrote %d bytes.", ret);
+        
+        while (read_total < fetch_size) {
+            // c3 = get_cycles();
+            events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+            // c4 = get_cycles();
+            // DEBUG("mtcp_epoll_wait() took %lld cycle", c4 - c3);
+            
+            if (events[0].events & MTCP_EPOLLIN) {
+                // c3 = get_cycles();
+                ret = mtcp_read(mctx, sockfd, recv_buf + read_total, fetch_size - read_total);
+                // c4 = get_cycles();
+                // DEBUG("mtcp_read() took %lld cycle", c4 - c3);
+               
+                if (ret <= 0) {
+                    perror("mtcp_read()");
+                    exit(-1);
+                }
+                read_total += ret;
+            }
+        }
+
+        // No epoll version
+        // while (read_total < fetch_size) {
+        //     ret = mtcp_read(mctx, sockfd, recv_buf + read_total, fetch_size - read_total);
+        //     if (ret <= 0)
+        //         continue;
+        //     read_total += ret;
+        // }
+
+
+
+        // do
+        //     events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
+        // while (!(events[0].events & MTCP_EPOLLIN));
+        // ret = mtcp_read(mctx, sockfd, recv_buf, fetch_size);
+        // if (ret <= 0) {
+        //     perror("mtcp_read()");
+        //     exit(-1);
+        // }
+
+        // c2 = get_cycles();
+        c2 = rte_get_tsc_cycles();
+        // printf("latency: %f nsec\n", (c2 - c1) / mhz);
+        printf("%f, i=%d\n", (c2 - c1) / mhz, i);
+        latency_vals[i] = (double) ((c2 - c1) / mhz);
+        compare_data(answer_buf, recv_buf, fetch_size);
+        // DEBUG("Read %d bytes. Go to next iteration", read_total);
     }
-    // events_ready = mtcp_epoll_wait(mctx, epfd, events, mcfg.max_num_buffers, -1);
-    // assert(events[0].events & MTCP_EPOLLIN);
-    ret = mtcp_read(mctx, sockfd, recv_buf, fetch_size);
-    // if (ret < 0)
-    //     perror("mtcp_read()");
-    // DEBUG("Read %d bytes.", ret);
-    clock_gettime(CLOCK_MONOTONIC, &t2);    
-    DEBUG("Data fetch finished. cnt = %d", cnt);
+
+
+    // DEBUG("Data fetch finished. cnt = %d", cnt);
 
     /* ----------------------------------------------------------------------- */
 
@@ -379,8 +488,12 @@ int main(int argc, char **argv) {
     DEBUG("Sockets are closed.");
 
     printf("\n");
-    printf("Received data: %s\n", recv_buf);
-    printf("Total Time taken to fetch %d bytes: %d nsec\n", fetch_size, time_diff_nsec(t1, t2));
+    // printf("Received data: %s\n", recv_buf);
+    // printf("Total Time taken to fetch %d bytes: %d nsec\n", fetch_size, time_diff_nsec(t1, t2));
+
+
+    qsort(latency_vals, iteration, sizeof(double), compare);
+    DEBUG("Median: %f", median(latency_vals, iteration));
 
     // printf("Detailed:\n");
     // printf("  t2 - t1: %d\n", time_diff_nsec(t1, t2));
